@@ -1,0 +1,235 @@
+"""
+Script export YOLOv12 sang ONNX cho Medical Imaging Dataset
+Tối ưu cho dataset có nhiều kích thước ảnh khác nhau
+Chạy script này trên SERVER (nơi có YOLOv12)
+"""
+
+from ultralytics import YOLO
+from pathlib import Path
+import torch
+
+# ========================= CẤU HÌNH =========================
+MODEL_PATHS = {
+    "yolov12n": "/home/binhnv/results/yolov12/yolov12n/yolov12n_uit_multi_imaging_medical/weights/best.pt",
+    "yolov12s": "/home/binhnv/results/yolov12/yolov12s/yolov12s_uit_multi_imaging_medical/weights/best.pt",
+    "yolov12m": "/home/binhnv/results/yolov12/yolov12m/yolov12m_uit_multi_imaging_medical/weights/best.pt",
+}
+
+# Cấu hình export - QUAN TRỌNG!
+EXPORT_CONFIG = {
+    # 1. Dynamic input size - HỖ TRỢ NHIỀU KÍCH THƯỚC ẢNH
+    # Medical imaging thường có size khác nhau (256x256, 512x512, 640x640, v.v.)
+    "dynamic": True,  # ⭐ QUAN TRỌNG NHẤT - cho phép input size linh hoạt
+    
+    # 2. Image size cho training
+    # Phải khớp với imgsz khi train (bạn train với 640)
+    "imgsz": 640,
+    
+    # 3. Precision
+    # FP32 (mặc định) để đảm bảo accuracy cao cho medical imaging
+    # Không dùng FP16 (half=True) vì có thể giảm độ chính xác
+    "half": False,
+    
+    # 4. Simplify graph - giảm kích thước model
+    "simplify": True,
+    
+    # 5. ONNX opset version
+    # Dùng 17 để tương thích tốt với ONNX Runtime mới và cũ
+    "opset": 17,
+    
+    # 6. Batch size
+    # batch=1 cho inference đơn lẻ, hoặc -1 cho dynamic batch
+    "batch": 1,  # Có thể thay bằng -1 nếu cần batch động
+}
+
+def print_model_info(model_path: str):
+    """In thông tin model trước khi export"""
+    print(f"\n{'='*60}")
+    print(f"📊 THÔNG TIN MODEL: {Path(model_path).parent.parent.name}")
+    print(f"{'='*60}")
+    
+    model = YOLO(model_path)
+    
+    # Lấy thông tin từ model
+    print(f"✅ Model path: {model_path}")
+    print(f"✅ Model type: {model.task}")
+    print(f"✅ Number of classes: {len(model.names)}")
+    print(f"✅ Class names: {model.names}")
+    
+    # Kiểm tra input size từ model
+    if hasattr(model.model, 'yaml'):
+        yaml_cfg = model.model.yaml
+        if 'imgsz' in yaml_cfg:
+            print(f"✅ Training image size: {yaml_cfg['imgsz']}")
+    
+    return model
+
+def export_model_to_onnx(model_path: str, model_name: str):
+    """
+    Export model sang ONNX với cấu hình tối ưu
+    
+    Args:
+        model_path: Đường dẫn đến file .pt
+        model_name: Tên model (yolov12n, yolov12s, yolov12m)
+    """
+    print(f"\n{'='*60}")
+    print(f"🚀 BẮT ĐẦU EXPORT: {model_name}")
+    print(f"{'='*60}")
+    
+    # Load model
+    model = print_model_info(model_path)
+    
+    # Output path
+    output_dir = Path(model_path).parent
+    onnx_path = output_dir / f"{model_name}.onnx"
+    
+    print(f"\n📝 CẤU HÌNH EXPORT:")
+    for key, value in EXPORT_CONFIG.items():
+        print(f"   {key}: {value}")
+    
+    # Export
+    print(f"\n⏳ Đang export... (có thể mất vài phút)")
+    try:
+        exported_path = model.export(
+            format="onnx",
+            **EXPORT_CONFIG
+        )
+        
+        print(f"\n✅ EXPORT THÀNH CÔNG!")
+        print(f"   📁 File ONNX: {exported_path}")
+        print(f"   📊 Kích thước: {Path(exported_path).stat().st_size / (1024*1024):.2f} MB")
+        
+        return exported_path
+        
+    except Exception as e:
+        print(f"\n❌ LỖI KHI EXPORT: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def verify_onnx_model(onnx_path: str):
+    """
+    Kiểm tra ONNX model sau khi export
+    """
+    print(f"\n{'='*60}")
+    print(f"🔍 KIỂM TRA ONNX MODEL")
+    print(f"{'='*60}")
+    
+    try:
+        import onnx
+        import onnxruntime as ort
+        
+        # 1. Kiểm tra với ONNX
+        print("\n1️⃣ Kiểm tra cấu trúc ONNX...")
+        onnx_model = onnx.load(onnx_path)
+        onnx.checker.check_model(onnx_model)
+        print("   ✅ Cấu trúc ONNX hợp lệ")
+        
+        # 2. Kiểm tra input shape
+        print("\n2️⃣ Kiểm tra input/output shapes...")
+        graph = onnx_model.graph
+        
+        # Input
+        for input_tensor in graph.input:
+            shape = [dim.dim_value if dim.dim_value > 0 else "dynamic" 
+                    for dim in input_tensor.type.tensor_type.shape.dim]
+            print(f"   📥 Input: {input_tensor.name}")
+            print(f"      Shape: {shape}")
+            print(f"      Type: {input_tensor.type.tensor_type.elem_type}")
+        
+        # Output
+        for output_tensor in graph.output:
+            shape = [dim.dim_value if dim.dim_value > 0 else "dynamic" 
+                    for dim in output_tensor.type.tensor_type.shape.dim]
+            print(f"   📤 Output: {output_tensor.name}")
+            print(f"      Shape: {shape}")
+        
+        # 3. Test inference với ONNX Runtime
+        print("\n3️⃣ Test inference với ONNX Runtime...")
+        session = ort.InferenceSession(onnx_path, providers=['CPUExecutionProvider'])
+        
+        # Test với nhiều kích thước khác nhau (quan trọng cho medical imaging!)
+        test_sizes = [(640, 640), (512, 512), (256, 256), (800, 600)]
+        
+        for h, w in test_sizes:
+            try:
+                import numpy as np
+                dummy_input = np.random.randn(1, 3, h, w).astype(np.float32)
+                input_name = session.get_inputs()[0].name
+                outputs = session.run(None, {input_name: dummy_input})
+                print(f"   ✅ Size {h}x{w}: OK - Output shape: {outputs[0].shape}")
+            except Exception as e:
+                print(f"   ❌ Size {h}x{w}: FAILED - {str(e)}")
+        
+        print("\n✅ KIỂM TRA HOÀN TẤT!")
+        
+    except ImportError as e:
+        print(f"\n⚠️  Cần cài đặt onnx và onnxruntime để kiểm tra:")
+        print(f"   pip install onnx onnxruntime")
+    except Exception as e:
+        print(f"\n❌ LỖI: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+def main():
+    """Main function"""
+    print("="*60)
+    print("🏥 EXPORT YOLOV12 TO ONNX FOR MEDICAL IMAGING")
+    print("="*60)
+    
+    print("\n📋 TẠI SAO CẤU HÌNH NÀY PHÙ HỢP CHO MEDICAL IMAGING?")
+    print("-" * 60)
+    print("1. dynamic=True:")
+    print("   → Cho phép input nhiều size khác nhau (256, 512, 640, 800...)")
+    print("   → Medical images thường có resolution khác nhau")
+    print("   → Không cần resize cứng nhắc về 640x640")
+    print()
+    print("2. half=False (FP32):")
+    print("   → Giữ độ chính xác cao nhất")
+    print("   → Medical imaging yêu cầu độ chính xác cao")
+    print("   → Không hy sinh accuracy để tăng tốc độ")
+    print()
+    print("3. opset=17:")
+    print("   → Tương thích với hầu hết ONNX Runtime")
+    print("   → Hỗ trợ dynamic shapes tốt")
+    print()
+    print("4. simplify=True:")
+    print("   → Tối ưu graph, giảm kích thước file")
+    print("   → Tăng tốc độ inference")
+    print("-" * 60)
+    
+    # Kiểm tra các model tồn tại
+    available_models = {name: path for name, path in MODEL_PATHS.items() 
+                       if Path(path).exists()}
+    
+    if not available_models:
+        print("\n❌ Không tìm thấy model nào!")
+        return
+    
+    print(f"\n✅ Tìm thấy {len(available_models)} model(s)")
+    
+    # Export từng model
+    exported_files = []
+    for model_name, model_path in available_models.items():
+        onnx_path = export_model_to_onnx(model_path, model_name)
+        if onnx_path:
+            exported_files.append(onnx_path)
+            
+            # Verify ONNX model
+            verify_onnx_model(onnx_path)
+    
+    # Tổng kết
+    print(f"\n{'='*60}")
+    print(f"🎉 HOÀN TẤT!")
+    print(f"{'='*60}")
+    print(f"✅ Đã export {len(exported_files)} file ONNX:")
+    for file_path in exported_files:
+        print(f"   📁 {file_path}")
+    
+    print(f"\n📝 BƯỚC TIẾP THEO:")
+    print(f"1. Copy các file .onnx về laptop của bạn")
+    print(f"2. Dùng script test_onnx.py để test trên laptop")
+    print(f"3. File ONNX có thể chạy trên bất kỳ platform nào (Windows/Linux)")
+
+if __name__ == "__main__":
+    main()
