@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, HttpUrl
 from typing import List, Dict, Optional, Union
 from datetime import datetime
 from enum import Enum
@@ -97,3 +97,9 @@ class ErrorResponse(BaseModel):
     error: str
     detail: Optional[str] = None
     timestamp: datetime = Field(default_factory=datetime.now)
+
+class DetectUrlRequest(BaseModel):
+    image_url: HttpUrl
+    model_name: Optional[str] = None
+    confidence_threshold: float = 0.25
+    iou_threshold: float = 0.45
