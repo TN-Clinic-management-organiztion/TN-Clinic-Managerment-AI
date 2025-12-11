@@ -2,6 +2,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Form
 from fastapi.responses import JSONResponse
 import logging
 from typing import List
+import httpx
 
 from app.services.inference_service import InferenceService
 from app.schemas.request_response import (
@@ -10,7 +11,8 @@ from app.schemas.request_response import (
     HealthResponse,
     ErrorResponse,
     ModelInfo,
-    ImageInfo
+    ImageInfo,
+    DetectUrlRequest
 )
 
 logger = logging.getLogger(__name__)
@@ -19,23 +21,6 @@ router = APIRouter()
 
 # Initialize service
 inference_service = InferenceService()
-
-@router.get("/health", response_model=HealthResponse)
-async def health_check():
-    """Health check endpoint"""
-    models = inference_service.get_available_models()
-    model_names = [m['name'] for m in models]
-    
-    return HealthResponse(
-        status="healthy",
-        models_loaded=model_names,
-        total_models=len(model_names)
-    )
-
-@router.get("/models", response_model=List[ModelInfo])
-async def get_models():
-    """Get list of available models"""
-    return inference_service.get_available_models()
 
 @router.post("/detect/image", response_model=DetectionResponse)
 async def detect_from_image(
@@ -98,10 +83,6 @@ async def detect_batch(
     - **files**: List of images
     - **params**: parameter inference
     """
-    print(f"files: {files}")
-    print(f"len files: {len(files)}")
-    print(f"image_ids: {image_ids}")
-    print(f"len image_ids: {len(image_ids)}")
 
     if len(files) != len(image_ids):
         raise HTTPException(
@@ -154,6 +135,44 @@ async def detect_batch(
     except Exception as e:
         logger.error(f"Batch detection error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+    
+# Detect by URL
+@router.post("/detect/url", response_model=DetectionResponse)
+async def detect_from_url(params: DetectUrlRequest):
+    """
+    Download image from URL and run detection
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(str(params.image_url), follow_redirects=True)
+
+            if response.status_code != 200:
+                raise HTTPException(status_code=400, detail=f"Cannot download image. Status: {response.status_code}")
+            
+            contents = response.content
+
+        result = inference_service.predict_from_bytes(
+            image_bytes=contents,
+            model_name=params.model_name,
+            confidence=params.confidence_threshold,
+            iou=params.iou_threshold
+        )
+
+        response = DetectionResponse(
+            success=True,
+            model=result['model'],
+            detections=result['detections'],
+            num_detections=result['num_detections'],
+            image_info=result['image_info'],
+            inference_time=result.get('performance')['total_ms'],
+            thresholds=result['thresholds']
+        )
+
+        return response
+    except Exception as e:
+        logger.error(f"Url Detection error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))    
+
 
 @router.get("/model/{model_name}/info")
 async def get_model_info(model_name: str):
@@ -166,3 +185,20 @@ async def get_model_info(model_name: str):
     except Exception as e:
         logger.error(f"Error getting model info: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+@router.get("/health", response_model=HealthResponse)
+async def health_check():
+    """Health check endpoint"""
+    models = inference_service.get_available_models()
+    model_names = [m['name'] for m in models]
+    
+    return HealthResponse(
+        status="healthy",
+        models_loaded=model_names,
+        total_models=len(model_names)
+    )
+
+@router.get("/models", response_model=List[ModelInfo])
+async def get_models():
+    """Get list of available models"""
+    return inference_service.get_available_models()

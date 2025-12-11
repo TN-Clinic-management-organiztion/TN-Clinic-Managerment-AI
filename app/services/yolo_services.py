@@ -3,7 +3,7 @@ from ultralytics import YOLO
 from PIL import Image
 import io
 from app.core.config import settings
-from app.models.prediction import BoundingBox, Prediction, PredictionResponse
+from app.schemas.request_response import BoundingBox, Prediction, PredictionResponse
 
 class YoloService:
   def __init__(self):
