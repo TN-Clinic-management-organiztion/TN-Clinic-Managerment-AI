@@ -1,0 +1,10 @@
+venv/
+venv_docker_test/
+__pycache__/
+*.pyc
+*.pyo
+*.log
+.ipynb_checkpoints
+.env
+.git
+.gitignore
